@@ -19,6 +19,7 @@ Colab instances reset after your session ends. Moving large datasets repeatedly 
     1.  Zip your local `VGGFace2` and `CheXpert` folders.
     2.  Upload the `.zip` files to your Google Drive. 
     3.  *Note: We will extract them directly into Colab's local high-speed disk during the run to prevent slow Google Drive I/O bottlenecks during training.*
+*   **Optional Kaggle API path:** If you have uploaded the datasets to Kaggle or have access to Kaggle-hosted copies, you can also use a `kaggle.json` legacy API key instead of Drive-based zip transfer. This is only applicable if the dataset is actually available to your Kaggle account.
 
 ---
 
@@ -52,19 +53,35 @@ Clone the repository or copy the unzipped code folder from your Drive.
 ### Step 4: Install Dependencies
 ```python
 !pip install -r requirements.txt
+!pip install kaggle
 ```
 
-### Step 5: Transfer and Extract Large Datasets
-Copy the dataset zip files from your Drive to the Colab local disk, then extract them into the `data/` folder. This ensures high-speed read access during training.
+### Step 5: Optional Kaggle Legacy API Setup
+If you want to download datasets with the Kaggle API instead of copying zip files from Drive, upload your `kaggle.json` file to Google Drive first, then configure the credentials inside Colab.
 ```python
-# Make data directory
+!mkdir -p /root/.kaggle
+!cp /content/drive/MyDrive/kaggle.json /root/.kaggle/kaggle.json
+!chmod 600 /root/.kaggle/kaggle.json
+!kaggle config view
+```
+
+If the datasets are hosted on Kaggle and your account has access, you can download them like this:
+```python
+!mkdir -p data
+!kaggle datasets download -d <OWNER>/<VGGFACE2_DATASET_SLUG> -p /content/dd2-wm/data
+!kaggle datasets download -d <OWNER>/<CHEXPERT_DATASET_SLUG> -p /content/dd2-wm/data
+!unzip -q /content/dd2-wm/data/<VGGFACE2_ARCHIVE>.zip -d /content/dd2-wm/data/
+!unzip -q /content/dd2-wm/data/<CHEXPERT_ARCHIVE>.zip -d /content/dd2-wm/data/
+```
+
+### Step 6: Transfer and Extract Large Datasets
+If you are not using Kaggle, copy the dataset zip files from your Drive to the Colab local disk, then extract them into the `data/` folder. This ensures high-speed read access during training.
+```python
 !mkdir -p data
 
-# Example for CheXpert
 !cp /content/drive/MyDrive/CheXpert.zip /content/dd2-wm/data/
 !unzip -q /content/dd2-wm/data/CheXpert.zip -d /content/dd2-wm/data/
 
-# Example for VGGFace2
 !cp /content/drive/MyDrive/VGGFace2.zip /content/dd2-wm/data/
 !unzip -q /content/dd2-wm/data/VGGFace2.zip -d /content/dd2-wm/data/
 ```
