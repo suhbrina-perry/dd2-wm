@@ -8,6 +8,7 @@ from src.data.datasets import get_cifar100_dataloaders, get_gtsrb_dataloaders, g
 from src.models.resnet import ResNet18
 from src.attacks.witches_brew import WitchesBrewPoisoner
 from src.detector.dynadetect import DynaDetectAnomalyScorer
+from src.utils.runtime import resolve_device, get_torch_load_kwargs
 
 def main():
     parser = argparse.ArgumentParser(description="Phase 2 Pipeline: Poison & Detect")
@@ -16,35 +17,42 @@ def main():
     parser.add_argument('--num-poisons', type=int, default=100)
     parser.add_argument('--target-class', type=int, default=0)
     parser.add_argument('--poison-class', type=int, default=1)
+    parser.add_argument('--poison-steps', type=int, default=50)
+    parser.add_argument('--poison-lr', type=float, default=0.1)
+    parser.add_argument('--poison-epsilon', type=float, default=16/255)
+    parser.add_argument('--clean-subset-size', type=int, default=5000)
     parser.add_argument('--data-dir', type=str, default='./data')
     parser.add_argument('--model-path', type=str, required=True, help="Path to pre-trained baseline model")
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
+    parser.add_argument('--num-workers', type=int, default=4)
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
+    pin_memory = device.type == 'cuda'
     print(f"Using device: {device}")
 
     # Load Dataset
     print("Loading Dataset...")
     is_32x32 = True
     if args.dataset == 'cifar100':
-        _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 100
     elif args.dataset == 'gtsrb':
-        _, _, _, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 43
     elif args.dataset == 'vggface':
-        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 8631
         is_32x32 = False
     elif args.dataset == 'chexpert':
-        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 5
         is_32x32 = False
     
     # Load Model
     print(f"Loading Model from {args.model_path}...")
     model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
-    model.load_state_dict(torch.load(args.model_path))
+    model.load_state_dict(torch.load(args.model_path, **get_torch_load_kwargs(device)))
     model.eval()
 
     # Step 1: Generate Poisoned Data
@@ -71,10 +79,13 @@ def main():
     if len(poison_indices) < args.num_poisons:
         raise ValueError(f"Could not find {args.num_poisons} images for class {args.poison_class}")
 
+    if target_img is None:
+        raise ValueError(f"Could not find a target image for class {args.target_class}")
+
     clean_images_tensor = torch.stack(clean_images)
     poison_labels_tensor = torch.tensor(poison_labels)
 
-    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50) # Reduced steps for speed in demo
+    poisoner = WitchesBrewPoisoner(model=model, epsilon=args.poison_epsilon, learning_rate=args.poison_lr, steps=args.poison_steps)
     
     poisoned_images = poisoner.generate_poisons(
         poison_images=clean_images_tensor,
@@ -99,9 +110,9 @@ def main():
     detector = DynaDetectAnomalyScorer(model=model, num_classes=num_classes)
     
     # Use a subset of clean data to build the Mahalanobis distribution
-    clean_indices = [i for i in range(5000) if i not in poison_indices and i < len(full_train_dataset)]
+    clean_indices = [i for i in range(args.clean_subset_size) if i not in poison_indices and i < len(full_train_dataset)]
     clean_subset = Subset(full_train_dataset, clean_indices)
-    clean_loader = DataLoader(clean_subset, batch_size=args.batch_size, shuffle=False)
+    clean_loader = DataLoader(clean_subset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=pin_memory)
     
     detector.fit_distributions(clean_loader, device)
 
@@ -111,7 +122,7 @@ def main():
     # Score the poisoned data
     # Create a quick dataloader for the poisoned tensors
     poison_dataset = torch.utils.data.TensorDataset(poisoned_images, poison_labels_tensor)
-    poison_loader = DataLoader(poison_dataset, batch_size=args.batch_size, shuffle=False)
+    poison_loader = DataLoader(poison_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=pin_memory)
     
     poison_distances, _, _ = detector.score_samples(poison_loader, device)
 

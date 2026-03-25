@@ -10,8 +10,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.data.datasets import get_cifar100_dataloaders, get_gtsrb_dataloaders, get_vggface_dataloaders, get_chexpert_dataloaders
 from src.models.resnet import ResNet18
 from src.detector.watermark_monitor import WatermarkMonitor
+from src.utils.runtime import resolve_device, get_torch_load_kwargs
 from run_phase3 import get_watermarks
-from train import train_epoch, evaluate
+from train import train_epoch
 
 def main():
     parser = argparse.ArgumentParser(description="Phase 4 Pipeline: Unauthorized Training Simulation")
@@ -19,47 +20,61 @@ def main():
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--epochs', type=int, default=10, help="Epochs to train stolen model (demo)")
     parser.add_argument('--num-poisons', type=int, default=100)
+    parser.add_argument('--target-class', type=int, default=0)
+    parser.add_argument('--poison-class', type=int, default=1)
+    parser.add_argument('--poison-steps', type=int, default=50)
+    parser.add_argument('--poison-lr', type=float, default=0.1)
+    parser.add_argument('--poison-epsilon', type=float, default=16/255)
+    parser.add_argument('--stolen-lr', type=float, default=0.01)
+    parser.add_argument('--stolen-weight-decay', type=float, default=5e-4)
     parser.add_argument('--data-dir', type=str, default='./data')
     parser.add_argument('--out-dir', type=str, default='./results')
     parser.add_argument('--auth-model-path', type=str, required=True, help="Path to clean baseline model")
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
+    parser.add_argument('--num-workers', type=int, default=4)
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
+    pin_memory = device.type == 'cuda'
     print(f"Using device: {device}")
 
     # 1. Setup Data and Authorized Model
     print("\n--- Setup: Loading Authorized Environment ---")
     is_32x32 = True
     if args.dataset == 'cifar100':
-        train_loader, val_loader, test_loader, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 100
-        target_class, poison_class = 0, 1
     elif args.dataset == 'gtsrb':
-        train_loader, val_loader, test_loader, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 43
-        target_class, poison_class = 0, 1
     elif args.dataset == 'vggface':
-        train_loader, val_loader, test_loader, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 8631
         is_32x32 = False
-        target_class, poison_class = 0, 1
     elif args.dataset == 'chexpert':
-        train_loader, val_loader, test_loader, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 5
         is_32x32 = False
-        target_class, poison_class = 0, 1
     
     auth_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
-    auth_model.load_state_dict(torch.load(args.auth_model_path))
+    auth_model.load_state_dict(torch.load(args.auth_model_path, **get_torch_load_kwargs(device)))
     auth_model.eval()
 
     # 2. Generate Watermarks and Get Reference Signatures
     print("\n--- Setup: Extracting Watermark Probes ---")
     watermarks, labels = get_watermarks(
-        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device
+        auth_model,
+        full_train_dataset,
+        args.num_poisons,
+        target_class=args.target_class,
+        poison_class=args.poison_class,
+        device=device,
+        poison_steps=args.poison_steps,
+        poison_lr=args.poison_lr,
+        poison_epsilon=args.poison_epsilon,
     )
-    watermark_loader = DataLoader(TensorDataset(watermarks, labels), batch_size=args.batch_size, shuffle=False)
+    watermark_loader = DataLoader(TensorDataset(watermarks, labels), batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=pin_memory)
 
     monitor = WatermarkMonitor(model=auth_model)
     monitor.generate_reference_signatures(watermark_loader, device)
@@ -72,7 +87,7 @@ def main():
     print("\n--- Phase 4: Simulating Unauthorized Training ---")
     stolen_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(stolen_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
+    optimizer = optim.SGD(stolen_model.parameters(), lr=args.stolen_lr, momentum=0.9, weight_decay=args.stolen_weight_decay)
 
     # Tracking metrics
     history = {layer: [] for layer in monitor.layer_names}

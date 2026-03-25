@@ -7,11 +7,18 @@ from PIL import Image, ImageFile, UnidentifiedImageError
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-def get_cifar100_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_workers=4):
+ 
+def _resolve_pin_memory(pin_memory):
+    if pin_memory is None:
+        return torch.cuda.is_available()
+    return pin_memory
+
+def get_cifar100_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_workers=4, pin_memory=None):
     """
     Downloads and prepares CIFAR-100 dataloaders.
     Applies standard data augmentation for training.
     """
+    pin_memory = _resolve_pin_memory(pin_memory)
     mean = (0.5071, 0.4865, 0.4409)
     std = (0.2673, 0.2564, 0.2762)
 
@@ -43,17 +50,18 @@ def get_cifar100_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, n
     val_dataset_clean = datasets.CIFAR100(root=data_dir, train=True, download=False, transform=test_transform)
     val_dataset.dataset = val_dataset_clean
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     return train_loader, val_loader, test_loader, full_train_dataset
 
-def get_gtsrb_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_workers=4):
+def get_gtsrb_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_workers=4, pin_memory=None):
     """
     Downloads and prepares GTSRB dataloaders.
     Images are resized to 32x32 to match CIFAR architectures.
     """
+    pin_memory = _resolve_pin_memory(pin_memory)
     mean = (0.3337, 0.3064, 0.3171)
     std = (0.2672, 0.2564, 0.2629)
 
@@ -86,17 +94,18 @@ def get_gtsrb_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_
     val_dataset_clean = datasets.GTSRB(root=data_dir, split='train', download=False, transform=test_transform)
     val_dataset.dataset = val_dataset_clean
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     return train_loader, val_loader, test_loader, full_train_dataset
 
-def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_workers=4):
+def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_workers=4, pin_memory=None):
     """
     Prepares VGGFace2 dataloaders.
     Requires 224x224 input size for standard architectures.
     """
+    pin_memory = _resolve_pin_memory(pin_memory)
     # Standard ImageNet normalization for ResNet architectures
     mean = (0.485, 0.456, 0.406)
     std = (0.229, 0.224, 0.225)
@@ -142,9 +151,9 @@ def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_worke
     # We will use the validation set as the test set for this implementation
     test_dataset = val_dataset
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
     
     return train_loader, val_loader, test_loader, full_train_dataset
 
@@ -213,11 +222,12 @@ class CheXpertDataset(Dataset):
             image = self.transform(image)
         return image, int(self.labels[cur_idx])
 
-def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_workers=4):
+def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_workers=4, pin_memory=None):
     """
     Prepares CheXpert dataloaders.
     Requires 224x224 input size for standard architectures.
     """
+    pin_memory = _resolve_pin_memory(pin_memory)
     train_csv = os.path.join(data_dir, 'train.csv')
     valid_csv = os.path.join(data_dir, 'valid.csv')
     
@@ -260,9 +270,9 @@ def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_work
     val_dataset_clean = CheXpertDataset(csv_file=train_csv, root_dir=data_dir, transform=val_transform)
     val_dataset.dataset = val_dataset_clean
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
     
     return train_loader, val_loader, test_loader, full_train_dataset
 

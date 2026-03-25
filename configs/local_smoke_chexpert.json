@@ -1,0 +1,23 @@
+{
+  "dataset": "chexpert",
+  "stages": ["train"],
+  "data_dir": "./data",
+  "checkpoint_dir": "./checkpoints/local_chexpert_smoke",
+  "results_dir": "./results/local_chexpert_smoke",
+  "device": "auto",
+  "num_workers": 0,
+  "batch_size": 8,
+  "epochs": 1,
+  "lr": 0.01,
+  "weight_decay": 0.0005,
+  "num_poisons": 4,
+  "target_class": 0,
+  "poison_class": 1,
+  "poison_steps": 5,
+  "poison_lr": 0.05,
+  "poison_epsilon": 0.06274509803921569,
+  "clean_subset_size": 128,
+  "phase4_epochs": 1,
+  "stolen_lr": 0.005,
+  "stolen_weight_decay": 0.0005
+}

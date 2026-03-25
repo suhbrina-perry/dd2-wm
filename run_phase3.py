@@ -1,15 +1,15 @@
 import os
 import argparse
 import torch
-import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.data.datasets import get_cifar100_dataloaders, get_gtsrb_dataloaders, get_vggface_dataloaders, get_chexpert_dataloaders
 from src.models.resnet import ResNet18
 from src.attacks.witches_brew import WitchesBrewPoisoner
 from src.detector.watermark_monitor import WatermarkMonitor
+from src.utils.runtime import resolve_device, get_torch_load_kwargs
 
-def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class, device):
+def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class, device, poison_steps=50, poison_lr=0.1, poison_epsilon=16/255):
     """Utility to generate the watermark probes from Phase 2 logic."""
     target_img = None
     target_label = None
@@ -29,10 +29,16 @@ def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class,
         if target_img is not None and len(poison_indices) == num_poisons:
             break
 
+    if target_img is None:
+        raise ValueError(f"Could not find a target image for class {target_class}")
+
+    if len(poison_indices) < num_poisons:
+        raise ValueError(f"Could not find {num_poisons} images for class {poison_class}")
+
     clean_images_tensor = torch.stack(clean_images)
     poison_labels_tensor = torch.tensor(poison_labels)
 
-    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50)
+    poisoner = WitchesBrewPoisoner(model=model, epsilon=poison_epsilon, learning_rate=poison_lr, steps=poison_steps)
     watermarks = poisoner.generate_poisons(
         poison_images=clean_images_tensor,
         poison_labels=poison_labels_tensor,
@@ -48,47 +54,59 @@ def main():
     parser.add_argument('--dataset', type=str, default='cifar100', choices=['cifar100', 'gtsrb', 'vggface', 'chexpert'])
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--num-poisons', type=int, default=100)
+    parser.add_argument('--target-class', type=int, default=0)
+    parser.add_argument('--poison-class', type=int, default=1)
+    parser.add_argument('--poison-steps', type=int, default=50)
+    parser.add_argument('--poison-lr', type=float, default=0.1)
+    parser.add_argument('--poison-epsilon', type=float, default=16/255)
     parser.add_argument('--data-dir', type=str, default='./data')
     parser.add_argument('--model-path', type=str, required=True, help="Path to clean baseline model")
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
+    parser.add_argument('--num-workers', type=int, default=4)
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
+    pin_memory = device.type == 'cuda'
     print(f"Using device: {device}")
 
     # Load Dataset & Clean Model (Our "Authorized" setup)
     print("Loading Data and Authorized Model...")
     is_32x32 = True
     if args.dataset == 'cifar100':
-        _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 100
-        target_class, poison_class = 0, 1
     elif args.dataset == 'gtsrb':
-        _, _, _, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 43
-        target_class, poison_class = 0, 1
     elif args.dataset == 'vggface':
-        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 8631
         is_32x32 = False
-        target_class, poison_class = 0, 1
     elif args.dataset == 'chexpert':
-        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=pin_memory)
         num_classes = 5
         is_32x32 = False
-        target_class, poison_class = 0, 1
     
     auth_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
-    auth_model.load_state_dict(torch.load(args.model_path))
+    auth_model.load_state_dict(torch.load(args.model_path, **get_torch_load_kwargs(device)))
     auth_model.eval()
 
     # Step 1: Repurpose poisons as watermarks
     print("\n--- Generating Watermark Probes ---")
     watermarks, labels = get_watermarks(
-        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device
+        auth_model,
+        full_train_dataset,
+        args.num_poisons,
+        target_class=args.target_class,
+        poison_class=args.poison_class,
+        device=device,
+        poison_steps=args.poison_steps,
+        poison_lr=args.poison_lr,
+        poison_epsilon=args.poison_epsilon,
     )
     
     watermark_dataset = TensorDataset(watermarks, labels)
-    watermark_loader = DataLoader(watermark_dataset, batch_size=args.batch_size, shuffle=False)
+    watermark_loader = DataLoader(watermark_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=pin_memory)
 
     # Step 2: Initialize Monitor and get Reference Signatures
     print("\n--- Initializing Watermark Monitor ---")
