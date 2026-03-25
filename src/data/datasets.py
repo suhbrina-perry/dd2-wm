@@ -3,7 +3,9 @@ import torch
 import pandas as pd
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split, Dataset
-from PIL import Image
+from PIL import Image, ImageFile, UnidentifiedImageError
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def get_cifar100_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_workers=4):
     """
@@ -190,16 +192,26 @@ class CheXpertDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        img_name = os.path.join(self.root_dir, self.image_paths[idx])
-        
-        # CheXpert images are grayscale, but ResNet expects 3 channels
-        image = Image.open(img_name).convert('RGB')
-        
+        max_attempts = 10
+        attempts = 0
+        cur_idx = int(idx)
+
+        while attempts < max_attempts:
+            img_name = os.path.join(self.root_dir, self.image_paths[cur_idx])
+            try:
+                image = Image.open(img_name).convert('RGB')
+                if self.transform:
+                    image = self.transform(image)
+                label = int(self.labels[cur_idx])
+                return image, label
+            except (UnidentifiedImageError, OSError, ValueError):
+                attempts += 1
+                cur_idx = (cur_idx + 1) % len(self)
+
+        image = Image.new('RGB', (224, 224))
         if self.transform:
             image = self.transform(image)
-            
-        label = self.labels[idx]
-        return image, label
+        return image, int(self.labels[cur_idx])
 
 def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_workers=4):
     """
